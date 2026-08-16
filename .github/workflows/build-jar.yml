@@ -12,6 +12,36 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      # libs/sha.jar can be committed manually, or pulled automatically from the
+      # latest successful build of Crown91/sha_test (needs the SHA_TEST_TOKEN secret:
+      # a fine-grained PAT with Actions: read + Contents: read on sha_test).
+      - name: fetch patched sha.jar from sha_test
+        if: ${{ hashFiles('libs/sha.jar') == '' }}
+        env:
+          GH_TOKEN: ${{ secrets.SHA_TEST_TOKEN }}
+        run: |
+          set -e
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::libs/sha.jar is absent and secret SHA_TEST_TOKEN is not set; upload libs/sha.jar manually"
+            exit 0
+          fi
+          run_id=$(gh run list -R Crown91/sha_test --workflow build-jar --status success -L 1 --json databaseId -q '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::warning::no successful build-jar run found in Crown91/sha_test"
+            exit 0
+          fi
+          echo "downloading artifact sha-mod-jar from run $run_id"
+          gh run download "$run_id" -R Crown91/sha_test -n sha-mod-jar -D /tmp/shaart
+          jar=$(find /tmp/shaart -name '*.jar' ! -name '*-sources.jar' | head -n 1)
+          if [ -z "$jar" ]; then
+            echo "::error::artifact sha-mod-jar contains no mod jar"
+            exit 1
+          fi
+          mkdir -p libs
+          cp "$jar" libs/sha.jar
+          echo "libs/sha.jar <- $jar"
+          unzip -l libs/sha.jar | grep -E 'assets/sha/bin' || true
+
       - name: check inputs
         run: |
           set -e
@@ -33,6 +63,15 @@ jobs:
             missing=1
           fi
           [ "$missing" = "0" ]
+
+      - name: verify sha.jar is the patched arm64 build
+        run: |
+          set -e
+          if unzip -l libs/sha.jar | grep -q 'assets/sha/bin/android-arm64/sha_rapier.so'; then
+            echo 'ok: libs/sha.jar contains the aarch64 native library'
+          else
+            echo '::warning::libs/sha.jar has no assets/sha/bin/android-arm64/sha_rapier.so — this looks like the original jar, not the patched one. The mod will build but physics will stay disabled on Android.'
+          fi
 
       - name: setup java 25
         uses: actions/setup-java@v4
