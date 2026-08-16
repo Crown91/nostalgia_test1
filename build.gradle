@@ -47,6 +47,15 @@ loom {
 
 sourceSets {
 	main {
+		// zemlya-api/java holds the three public Zemlya API types (com.example.api.*).
+		// The prebuilt libs/zemlya-1.0.0.jar is an older build that lacks the gravity
+		// infection / anomaly API this mod uses, so the API is compiled from source here
+		// and excluded from the produced jar (see the jar task below).
+		java {
+			srcDirs += [
+					'zemlya-api/java'
+			]
+		}
 		resources {
 			srcDirs += [
 					'src/main/generated'
@@ -63,13 +72,16 @@ dependencies {
 
 	// Fabric API. Using modApi so all Fabric classes (DimensionRenderingRegistry etc.) are on compile classpath.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-	// SHA and Zemlya are consumed as prebuilt jars from libs/ instead of composite builds,
+	// SHA is consumed as a prebuilt jar from libs/ instead of a composite build,
 	// so this repository can be built standalone (see README-BUILD-RU.md).
 	// Minecraft 26.1.x is unobfuscated and fabric.loom.disableObfuscation=true is set in
 	// gradle.properties, so plain file dependencies need no remapping.
 	compileOnly files("libs/sha.jar")
-	compileOnly files("libs/zemlya-1.0.0.jar")
 	compileOnly files("libs/sodium.jar", "libs/punchy.jar")
+	// NOTE: libs/zemlya-1.0.0.jar is intentionally NOT on the compile classpath.
+	// It is stale: com.example.api.GravityChanger there has no isInfected(), infect(),
+	// getInfectedGravity(), setGravityAnomalyStrength(), and com.example.api.GravityAnomalyZone
+	// does not exist at all. zemlya-api/java provides the current API instead.
 }
 
 processResources {
@@ -103,6 +115,10 @@ tasks.withType(Jar).configureEach {
 
 jar {
 	inputs.property "archivesName", project.base.archivesName
+
+	// The Zemlya API classes are provided at runtime by the Zemlya mod itself.
+	// Shipping our own copies would shadow the real implementation.
+	exclude 'com/example/**'
 
 	from("LICENSE") {
 		rename { "${it}_${inputs.properties.archivesName}"}
@@ -145,10 +161,10 @@ build.configure {
 	finalizedBy(deploy)
 }
 
-// Make a missing libs/sha.jar obvious instead of failing with hundreds of "package net.sha
-// does not exist" errors.
+// Make missing prebuilt jars obvious instead of failing with hundreds of
+// "package net.sha does not exist" errors.
 gradle.projectsEvaluated {
-	["libs/sha.jar", "libs/zemlya-1.0.0.jar", "libs/sodium.jar", "libs/punchy.jar"].each { p ->
+	["libs/sha.jar", "libs/sodium.jar", "libs/punchy.jar"].each { p ->
 		if (!file(p).exists()) {
 			logger.error("ERROR: ${p} is missing. Put the prebuilt jar there before building (see README-BUILD-RU.md).")
 		}

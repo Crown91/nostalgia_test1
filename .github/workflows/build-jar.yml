@@ -40,13 +40,12 @@ jobs:
           mkdir -p libs
           cp "$jar" libs/sha.jar
           echo "libs/sha.jar <- $jar"
-          unzip -l libs/sha.jar | grep -E 'assets/sha/bin' || true
 
       - name: check inputs
         run: |
           set -e
           missing=0
-          for f in libs/sha.jar libs/zemlya-1.0.0.jar libs/sodium.jar libs/punchy.jar; do
+          for f in libs/sha.jar libs/sodium.jar libs/punchy.jar; do
             if [ -f "$f" ]; then
               echo "ok: $f ($(stat -c%s "$f") bytes)"
             else
@@ -54,10 +53,14 @@ jobs:
               missing=1
             fi
           done
-          if [ ! -d src/main/java ]; then
-            echo "::error::src/main/java is missing"
-            missing=1
-          fi
+          for d in src/main/java zemlya-api/java; do
+            if [ -d "$d" ]; then
+              echo "ok: $d"
+            else
+              echo "::error::$d is missing"
+              missing=1
+            fi
+          done
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             echo "::error::gradle/wrapper/gradle-wrapper.jar is missing (binary file, must be committed)"
             missing=1
@@ -70,7 +73,7 @@ jobs:
           if unzip -l libs/sha.jar | grep -q 'assets/sha/bin/android-arm64/sha_rapier.so'; then
             echo 'ok: libs/sha.jar contains the aarch64 native library'
           else
-            echo '::warning::libs/sha.jar has no assets/sha/bin/android-arm64/sha_rapier.so — this looks like the original jar, not the patched one. The mod will build but physics will stay disabled on Android.'
+            echo '::warning::libs/sha.jar has no assets/sha/bin/android-arm64/sha_rapier.so - this looks like the original jar, not the patched one.'
           fi
 
       - name: setup java 25
@@ -83,6 +86,19 @@ jobs:
         run: |
           chmod +x gradlew || true
           ./gradlew build --no-daemon --stacktrace
+
+      - name: check that Zemlya API classes are not shipped
+        if: success()
+        run: |
+          set -e
+          for j in build/libs/*.jar; do
+            case "$j" in *-sources.jar) continue;; esac
+            if unzip -l "$j" | grep -q 'com/example/'; then
+              echo "::warning::$j contains com/example classes; they should be provided by the Zemlya mod at runtime"
+            else
+              echo "ok: $j ships no com/example classes"
+            fi
+          done
 
       - name: upload jar
         if: success()
