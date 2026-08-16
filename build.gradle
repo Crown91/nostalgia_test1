@@ -18,6 +18,29 @@ repositories {
 	maven { url 'https://api.modrinth.com/maven' }
 }
 
+// ---------------------------------------------------------------------------
+// Prebuilt dependencies.
+//
+// The upstream project consumed SHA and Zemlya through composite builds
+// (includeBuild '../SHA' / '../Zemlya') and nested them into the mod jar with
+// Loom's `include` configuration. Composite builds cannot work here because
+// those projects are separate repositories, so the very same jar-in-jar
+// bundling is done from the prebuilt jars in libs/ instead.
+//
+// sodium and punchy stay compile-only: they are normal external mods that the
+// player installs, they must NOT be bundled.
+// ---------------------------------------------------------------------------
+def shaJar = file("libs/sha.jar")
+def zemlyaJar = file("libs/zemlya.jar")
+
+// libs/zemlya-1.0.0.jar is an OLD build: its com.example.api.GravityChanger has
+// no isInfected(), infect(), getInfectedGravity() or setGravityAnomalyStrength(),
+// and com.example.api.GravityAnomalyZone does not exist there at all. It is
+// therefore never used. Put an up-to-date build at libs/zemlya.jar to have it
+// bundled; otherwise the API is compiled from zemlya-api/java and must be
+// provided by a separately installed Zemlya mod at runtime.
+def bundleZemlya = zemlyaJar.exists()
+
 loom {
 	accessWidenerPath = file("src/main/resources/nostalgia.accesswidener")
 	mixin {
@@ -47,14 +70,11 @@ loom {
 
 sourceSets {
 	main {
-		// zemlya-api/java holds the three public Zemlya API types (com.example.api.*).
-		// The prebuilt libs/zemlya-1.0.0.jar is an older build that lacks the gravity
-		// infection / anomaly API this mod uses, so the API is compiled from source here
-		// and excluded from the produced jar (see the jar task below).
 		java {
-			srcDirs += [
-					'zemlya-api/java'
-			]
+			// Fallback only: used when libs/zemlya.jar is not present.
+			if (!bundleZemlya) {
+				srcDirs += ['zemlya-api/java']
+			}
 		}
 		resources {
 			srcDirs += [
@@ -72,16 +92,21 @@ dependencies {
 
 	// Fabric API. Using modApi so all Fabric classes (DimensionRenderingRegistry etc.) are on compile classpath.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-	// SHA is consumed as a prebuilt jar from libs/ instead of a composite build,
-	// so this repository can be built standalone (see README-BUILD-RU.md).
-	// Minecraft 26.1.x is unobfuscated and fabric.loom.disableObfuscation=true is set in
-	// gradle.properties, so plain file dependencies need no remapping.
-	compileOnly files("libs/sha.jar")
+
+	// Compile classpath. Minecraft 26.1.x is unobfuscated and
+	// fabric.loom.disableObfuscation=true is set in gradle.properties, so plain
+	// file dependencies need no remapping.
+	compileOnly files(shaJar)
 	compileOnly files("libs/sodium.jar", "libs/punchy.jar")
-	// NOTE: libs/zemlya-1.0.0.jar is intentionally NOT on the compile classpath.
-	// It is stale: com.example.api.GravityChanger there has no isInfected(), infect(),
-	// getInfectedGravity(), setGravityAnomalyStrength(), and com.example.api.GravityAnomalyZone
-	// does not exist at all. zemlya-api/java provides the current API instead.
+
+	// jar-in-jar: bundled into build/libs/alpha_protocol-*.jar under META-INF/jars,
+	// so a single file in the mods folder is enough, like in the original build.
+	include files(shaJar)
+
+	if (bundleZemlya) {
+		compileOnly files(zemlyaJar)
+		include files(zemlyaJar)
+	}
 }
 
 processResources {
@@ -116,9 +141,12 @@ tasks.withType(Jar).configureEach {
 jar {
 	inputs.property "archivesName", project.base.archivesName
 
-	// The Zemlya API classes are provided at runtime by the Zemlya mod itself.
-	// Shipping our own copies would shadow the real implementation.
-	exclude 'com/example/**'
+	// When Zemlya is bundled, the real mod jar provides com.example.**.
+	// When it is not, the API compiled from zemlya-api/java must not shadow the
+	// implementation of a separately installed Zemlya mod.
+	if (!bundleZemlya) {
+		exclude 'com/example/**'
+	}
 
 	from("LICENSE") {
 		rename { "${it}_${inputs.properties.archivesName}"}
@@ -168,5 +196,11 @@ gradle.projectsEvaluated {
 		if (!file(p).exists()) {
 			logger.error("ERROR: ${p} is missing. Put the prebuilt jar there before building (see README-BUILD-RU.md).")
 		}
+	}
+	if (bundleZemlya) {
+		logger.lifecycle("Zemlya: bundling libs/zemlya.jar into the mod jar (jar-in-jar)")
+	} else {
+		logger.warn("Zemlya: libs/zemlya.jar not found - compiling the API from zemlya-api/java. " +
+			"The Zemlya mod will have to be installed separately, or drop an up-to-date build at libs/zemlya.jar to bundle it.")
 	}
 }

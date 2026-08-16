@@ -53,14 +53,25 @@ jobs:
               missing=1
             fi
           done
-          for d in src/main/java zemlya-api/java; do
-            if [ -d "$d" ]; then
-              echo "ok: $d"
+          if [ -f libs/zemlya.jar ]; then
+            echo "ok: libs/zemlya.jar ($(stat -c%s libs/zemlya.jar) bytes) - will be bundled (jar-in-jar)"
+            if unzip -p libs/zemlya.jar 'com/example/api/GravityChanger.class' | grep -q 'isInfected'; then
+              echo 'ok: libs/zemlya.jar has the current gravity infection API'
             else
-              echo "::error::$d is missing"
+              echo '::error::libs/zemlya.jar has no isInfected() in com.example.api.GravityChanger - it is an outdated build and compilation will fail'
               missing=1
             fi
-          done
+          else
+            echo '::warning::libs/zemlya.jar is absent: the API will be compiled from zemlya-api/java and the Zemlya mod will have to be installed separately'
+            if [ ! -d zemlya-api/java ]; then
+              echo '::error::neither libs/zemlya.jar nor zemlya-api/java exists'
+              missing=1
+            fi
+          fi
+          if [ ! -d src/main/java ]; then
+            echo '::error::src/main/java is missing'
+            missing=1
+          fi
           if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             echo "::error::gradle/wrapper/gradle-wrapper.jar is missing (binary file, must be committed)"
             missing=1
@@ -87,17 +98,14 @@ jobs:
           chmod +x gradlew || true
           ./gradlew build --no-daemon --stacktrace
 
-      - name: check that Zemlya API classes are not shipped
+      - name: verify bundled (nested) mod jars
         if: success()
         run: |
           set -e
           for j in build/libs/*.jar; do
-            case "$j" in *-sources.jar) continue;; esac
-            if unzip -l "$j" | grep -q 'com/example/'; then
-              echo "::warning::$j contains com/example classes; they should be provided by the Zemlya mod at runtime"
-            else
-              echo "ok: $j ships no com/example classes"
-            fi
+            case "$j" in *-sources.jar|*-dev.jar) continue;; esac
+            echo "--- $j"
+            unzip -l "$j" | grep 'META-INF/jars/' || echo '::warning::no nested jars found'
           done
 
       - name: upload jar
