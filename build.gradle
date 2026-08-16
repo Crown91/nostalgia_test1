@@ -35,19 +35,19 @@ base {
 // sodium and punchy stay compile-only: they are ordinary external mods that the
 // player installs, they must NOT be bundled.
 // ---------------------------------------------------------------------------
-def shaJar = file("libs/sha.jar")
-def zemlyaJar = file("libs/zemlya.jar")
 
-// libs/zemlya-1.0.0.jar is an OLD build (made from Zemlya's src_legacy): its
-// com.example.api.GravityChanger has no isInfected(), infect(),
-// getInfectedGravity() or setGravityAnomalyStrength(), and
-// com.example.api.GravityAnomalyZone does not exist there at all. It is
-// therefore never used. Put an up-to-date build at libs/zemlya.jar to have it
-// bundled; otherwise the API is compiled from zemlya-api/java and the Zemlya
-// mod has to be installed separately.
-def bundleZemlya = zemlyaJar.exists()
-
-def nestedRepoDir = layout.buildDirectory.dir("nestedRepo").get().asFile
+// Jars are matched by pattern, not by an exact file name: libs/sha.jar,
+// libs/sha-1.0.7.jar and so on all work.
+def findLibJars = { String namePattern ->
+	def dir = file("libs")
+	if (!dir.isDirectory()) {
+		return []
+	}
+	return dir.listFiles()
+			.findAll { it.isFile() && it.name ==~ namePattern }
+			.findAll { !it.name.endsWith("-sources.jar") && !it.name.endsWith("-dev.jar") }
+			.sort { it.name }
+}
 
 // Reads id/version from a mod jar's own fabric.mod.json.
 def readModMeta = { File jar ->
@@ -69,10 +69,44 @@ def readModMeta = { File jar ->
 	}
 }
 
+// SHA: prefer an exact libs/sha.jar, otherwise take the last libs/sha*.jar.
+def shaCandidates = findLibJars(/sha.*\.jar/)
+def shaJar = shaCandidates.find { it.name == "sha.jar" } ?: (shaCandidates ? shaCandidates.last() : null)
+
+// Zemlya is picked by CONTENT, not by file name. libs/zemlya-1.0.0.jar shipped
+// with the sources is an OLD build (made from Zemlya's src_legacy): its
+// com.example.api.GravityChanger has no isInfected(), infect(),
+// getInfectedGravity() or setGravityAnomalyStrength(), and
+// com.example.api.GravityAnomalyZone does not exist there at all - compiling
+// Alpha Protocol against it fails with 13 "cannot find symbol" errors. Only a
+// build that really carries the current API is used; otherwise the API is
+// compiled from zemlya-api/java and the Zemlya mod is installed separately.
+def hasCurrentZemlyaApi = { File jar ->
+	try {
+		new ZipFile(jar).withCloseable { zip ->
+			def gravityChanger = zip.getEntry("com/example/api/GravityChanger.class")
+			if (gravityChanger == null || zip.getEntry("com/example/api/GravityAnomalyZone.class") == null) {
+				return false
+			}
+			def constantPool = new String(zip.getInputStream(gravityChanger).bytes, "ISO-8859-1")
+			return ["isInfected", "infect", "getInfectedGravity", "setGravityAnomalyStrength"].every { constantPool.contains(it) }
+		}
+	} catch (Exception e) {
+		logger.error("Could not inspect ${jar}: ${e.message}")
+		return false
+	}
+}
+
+def zemlyaCandidates = findLibJars(/zemlya.*\.jar/)
+def zemlyaJar = zemlyaCandidates.reverse().find { hasCurrentZemlyaApi(it) }
+def bundleZemlya = zemlyaJar != null
+
+def nestedRepoDir = layout.buildDirectory.dir("nestedRepo").get().asFile
+
 // Copies a jar into build/nestedRepo as <id>-<version>.jar and returns the
 // dependency notation for it (flatDir ignores the group).
 def stageForNesting = { File jar ->
-	if (!jar.exists()) {
+	if (jar == null || !jar.exists()) {
 		return null
 	}
 	def meta = readModMeta(jar)
@@ -89,7 +123,7 @@ def stageForNesting = { File jar ->
 	return "nested:${meta.id}:${meta.version}"
 }
 
-def nestedDependencies = [stageForNesting(shaJar), bundleZemlya ? stageForNesting(zemlyaJar) : null]
+def nestedDependencies = [stageForNesting(shaJar), stageForNesting(zemlyaJar)]
 		.findAll { it != null }
 
 repositories {
@@ -122,7 +156,7 @@ loom {
 			vmArg "-Dfabric-api.datagen"
 			vmArg "-Dfabric-api.datagen.output-dir=${file("src/main/generated")}"
 			vmArg "-Dfabric-api.datagen.modid=nostalgia"
-			vmArg "-Dfabric.addGameVersion=26.1.1"
+			vmArg "-Dfabric.addGameVersion=${project.minecraft_version}"
 			ideConfigGenerated = true
 			runDir "build/datagen"
 		}
@@ -132,7 +166,7 @@ loom {
 sourceSets {
 	main {
 		java {
-			// Fallback only: used when libs/zemlya.jar is not present.
+			// Fallback only: used when no up-to-date Zemlya build is in libs/.
 			if (!bundleZemlya) {
 				srcDirs += ['zemlya-api/java']
 			}
@@ -148,7 +182,7 @@ sourceSets {
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	// mappings are not needed for unobfuscated Minecraft 26.1.1
+	// mappings are not needed for unobfuscated Minecraft 26.1.x
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
 	// Fabric API. Using modApi so all Fabric classes (DimensionRenderingRegistry etc.) are on compile classpath.
@@ -157,7 +191,9 @@ dependencies {
 	// Compile classpath. Minecraft 26.1.x is unobfuscated and
 	// fabric.loom.disableObfuscation=true is set in gradle.properties, so plain
 	// file dependencies need no remapping.
-	compileOnly files(shaJar)
+	if (shaJar != null) {
+		compileOnly files(shaJar)
+	}
 	compileOnly files("libs/sodium.jar", "libs/punchy.jar")
 	if (bundleZemlya) {
 		compileOnly files(zemlyaJar)
@@ -231,6 +267,7 @@ tasks.register('deploy') {
 	doLast {
 		def userHome = System.getProperty("user.home")
 		def deployDirs = [
+			project.findProperty("modsDir"),
 			System.getenv("MOD_DEPLOY_DIR"),
 			"${userHome}/AppData/Roaming/PrismLauncher/instances/gundonio/minecraft/mods",
 			"${userHome}/AppData/Roaming/PrismLauncher/instances/26.1.2(1)/minecraft/mods"
@@ -250,16 +287,26 @@ build.configure {
 	finalizedBy(deploy)
 }
 
-// Make missing prebuilt jars obvious instead of failing with hundreds of
-// "package net.sha does not exist" errors.
+// Make missing or unusable prebuilt jars obvious instead of failing with
+// hundreds of "package net.sha does not exist" errors.
 gradle.projectsEvaluated {
-	["libs/sha.jar", "libs/sodium.jar", "libs/punchy.jar"].each { p ->
+	if (shaJar == null) {
+		logger.error("ERROR: no libs/sha*.jar found. Put the prebuilt SHA jar into libs/ (see README-BUILD-RU.md).")
+	} else {
+		logger.lifecycle("SHA: using libs/${shaJar.name}")
+	}
+	["libs/sodium.jar", "libs/punchy.jar"].each { p ->
 		if (!file(p).exists()) {
 			logger.error("ERROR: ${p} is missing. Put the prebuilt jar there before building (see README-BUILD-RU.md).")
 		}
 	}
-	if (!bundleZemlya) {
-		logger.warn("Zemlya: libs/zemlya.jar not found - compiling the API from zemlya-api/java. " +
-			"The Zemlya mod will have to be installed separately, or drop an up-to-date build at libs/zemlya.jar to bundle it.")
+	if (bundleZemlya) {
+		logger.lifecycle("Zemlya: using libs/${zemlyaJar.name} (bundled into the mod jar)")
+	} else {
+		def rejected = zemlyaCandidates.collect { it.name }
+		logger.warn("Zemlya: no up-to-date build in libs/" +
+			(rejected ? " (ignored as outdated: ${rejected.join(', ')})" : "") +
+			" - compiling the API from zemlya-api/java. The Zemlya mod will have to be installed separately, " +
+			"or drop a fresh build from Crown91/zemlya_test into libs/ to bundle it.")
 	}
 }

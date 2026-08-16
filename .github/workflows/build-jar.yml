@@ -12,17 +12,23 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
-      # libs/sha.jar can be committed manually, or pulled automatically from the
-      # latest successful build of Crown91/sha_test (needs the SHA_TEST_TOKEN secret:
+      # The SHA jar can be committed under any name (libs/sha.jar,
+      # libs/sha-1.0.7.jar, ...), or pulled automatically from the latest
+      # successful build of Crown91/sha_test (needs the SHA_TEST_TOKEN secret:
       # a fine-grained PAT with Actions: read + Contents: read on sha_test).
-      - name: fetch patched sha.jar from sha_test
-        if: ${{ hashFiles('libs/sha.jar') == '' }}
+      - name: fetch patched sha jar from sha_test
         env:
           GH_TOKEN: ${{ secrets.SHA_TEST_TOKEN }}
         run: |
           set -e
+          shopt -s nullglob
+          existing=(libs/sha*.jar)
+          if [ ${#existing[@]} -gt 0 ]; then
+            echo "already present: ${existing[*]}"
+            exit 0
+          fi
           if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::libs/sha.jar is absent and secret SHA_TEST_TOKEN is not set; upload libs/sha.jar manually"
+            echo "::warning::no libs/sha*.jar and secret SHA_TEST_TOKEN is not set; upload the jar into libs/ manually"
             exit 0
           fi
           run_id=$(gh run list -R Crown91/sha_test --workflow build-jar --status success -L 1 --json databaseId -q '.[0].databaseId')
@@ -44,8 +50,20 @@ jobs:
       - name: check inputs
         run: |
           set -e
+          shopt -s nullglob
           missing=0
-          for f in libs/sha.jar libs/sodium.jar libs/punchy.jar; do
+
+          sha_jars=(libs/sha*.jar)
+          if [ ${#sha_jars[@]} -gt 0 ]; then
+            SHA_JAR="${sha_jars[-1]}"
+            echo "ok: $SHA_JAR ($(stat -c%s "$SHA_JAR") bytes)"
+            echo "SHA_JAR=$SHA_JAR" >> "$GITHUB_ENV"
+          else
+            echo "::error::no libs/sha*.jar found. Upload the SHA jar into libs/ (see README-BUILD-RU.md)"
+            missing=1
+          fi
+
+          for f in libs/sodium.jar libs/punchy.jar; do
             if [ -f "$f" ]; then
               echo "ok: $f ($(stat -c%s "$f") bytes)"
             else
@@ -53,21 +71,27 @@ jobs:
               missing=1
             fi
           done
-          if [ -f libs/zemlya.jar ]; then
-            echo "ok: libs/zemlya.jar ($(stat -c%s libs/zemlya.jar) bytes) - will be bundled (jar-in-jar)"
-            if unzip -p libs/zemlya.jar 'com/example/api/GravityChanger.class' | grep -q 'isInfected'; then
-              echo 'ok: libs/zemlya.jar has the current gravity infection API'
+
+          # Zemlya is chosen by content: a build without isInfected() in
+          # com.example.api.GravityChanger is an old src_legacy build and is skipped.
+          zemlya_ok=""
+          for z in libs/zemlya*.jar; do
+            if unzip -p "$z" 'com/example/api/GravityChanger.class' 2>/dev/null | grep -qa 'isInfected'; then
+              zemlya_ok="$z"
             else
-              echo '::error::libs/zemlya.jar has no isInfected() in com.example.api.GravityChanger - it is an outdated build and compilation will fail'
-              missing=1
+              echo "::warning::$z has no isInfected() in com.example.api.GravityChanger - outdated build, ignored"
             fi
+          done
+          if [ -n "$zemlya_ok" ]; then
+            echo "ok: $zemlya_ok ($(stat -c%s "$zemlya_ok") bytes) - will be bundled (jar-in-jar)"
           else
-            echo '::warning::libs/zemlya.jar is absent: the API will be compiled from zemlya-api/java and the Zemlya mod will have to be installed separately'
+            echo '::warning::no up-to-date Zemlya build in libs/: the API will be compiled from zemlya-api/java and the Zemlya mod will have to be installed separately'
             if [ ! -d zemlya-api/java ]; then
-              echo '::error::neither libs/zemlya.jar nor zemlya-api/java exists'
+              echo '::error::neither an up-to-date libs/zemlya*.jar nor zemlya-api/java exists'
               missing=1
             fi
           fi
+
           if [ ! -d src/main/java ]; then
             echo '::error::src/main/java is missing'
             missing=1
@@ -78,13 +102,13 @@ jobs:
           fi
           [ "$missing" = "0" ]
 
-      - name: verify sha.jar is the patched arm64 build
+      - name: verify the sha jar is the patched arm64 build
         run: |
           set -e
-          if unzip -l libs/sha.jar | grep -q 'assets/sha/bin/android-arm64/sha_rapier.so'; then
-            echo 'ok: libs/sha.jar contains the aarch64 native library'
+          if unzip -l "$SHA_JAR" | grep -q 'assets/sha/bin/android-arm64/sha_rapier.so'; then
+            echo "ok: $SHA_JAR contains the aarch64 native library"
           else
-            echo '::warning::libs/sha.jar has no assets/sha/bin/android-arm64/sha_rapier.so - this looks like the original jar, not the patched one.'
+            echo "::warning::$SHA_JAR has no assets/sha/bin/android-arm64/sha_rapier.so - this looks like the original jar, not the patched one."
           fi
 
       - name: setup java 25
