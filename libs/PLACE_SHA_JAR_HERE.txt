@@ -1,0 +1,10 @@
+libs/sha.jar is missing on purpose: it is not part of the Nostalgia sources.
+
+How to get it:
+1. Build the repository Crown91/sha_test (Actions -> build-jar).
+2. Download the artifact sha-mod-jar and unzip it.
+3. Rename the jar inside to exactly sha.jar.
+4. Upload it here as libs/sha.jar (Add file -> Upload files).
+
+sodium.jar, punchy.jar and zemlya-1.0.0.jar already ship with the sources,
+which is why they are the only jars in this folder right now.

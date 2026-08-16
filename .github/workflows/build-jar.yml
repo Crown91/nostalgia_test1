@@ -1,0 +1,68 @@
+name: build-jar
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: check inputs
+        run: |
+          set -e
+          missing=0
+          for f in libs/sha.jar libs/zemlya-1.0.0.jar libs/sodium.jar libs/punchy.jar; do
+            if [ -f "$f" ]; then
+              echo "ok: $f ($(stat -c%s "$f") bytes)"
+            else
+              echo "::error::$f is missing. Upload it into libs/ (see README-BUILD-RU.md)"
+              missing=1
+            fi
+          done
+          if [ ! -d src/main/java ]; then
+            echo "::error::src/main/java is missing"
+            missing=1
+          fi
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::error::gradle/wrapper/gradle-wrapper.jar is missing (binary file, must be committed)"
+            missing=1
+          fi
+          [ "$missing" = "0" ]
+
+      - name: setup java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: gradle build
+        run: |
+          chmod +x gradlew || true
+          ./gradlew build --no-daemon --stacktrace
+
+      - name: upload jar
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nostalgia-mod-jar
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+          if-no-files-found: error
+
+      - name: upload build logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build/reports/**
+            build/tmp/**/*.log
+            hs_err_pid*.log
+          retention-days: 7
+          if-no-files-found: ignore

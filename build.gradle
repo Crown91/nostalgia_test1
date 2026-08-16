@@ -63,11 +63,13 @@ dependencies {
 
 	// Fabric API. Using modApi so all Fabric classes (DimensionRenderingRegistry etc.) are on compile classpath.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-	implementation 'net.sha:sha:1.0.7'
-	include 'net.sha:sha:1.0.7'
+	// SHA and Zemlya are consumed as prebuilt jars from libs/ instead of composite builds,
+	// so this repository can be built standalone (see README-BUILD-RU.md).
+	// Minecraft 26.1.x is unobfuscated and fabric.loom.disableObfuscation=true is set in
+	// gradle.properties, so plain file dependencies need no remapping.
+	compileOnly files("libs/sha.jar")
+	compileOnly files("libs/zemlya-1.0.0.jar")
 	compileOnly files("libs/sodium.jar", "libs/punchy.jar")
-	implementation 'net.zemlya:zemlya:1.0.0'
-	include 'net.zemlya:zemlya:1.0.0'
 }
 
 processResources {
@@ -116,12 +118,7 @@ publishing {
 		}
 	}
 
-	// See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
 	repositories {
-		// Add repositories to publish to here.
-		// Notice: This block does NOT have the same function as the block in the top level.
-		// The repositories here will be used for publishing your artifact, not for
-		// retrieving dependencies.
 	}
 }
 
@@ -146,4 +143,14 @@ tasks.register('deploy') {
 
 build.configure {
 	finalizedBy(deploy)
+}
+
+// Make a missing libs/sha.jar obvious instead of failing with hundreds of "package net.sha
+// does not exist" errors.
+gradle.projectsEvaluated {
+	["libs/sha.jar", "libs/zemlya-1.0.0.jar", "libs/sodium.jar", "libs/punchy.jar"].each { p ->
+		if (!file(p).exists()) {
+			logger.error("ERROR: ${p} is missing. Put the prebuilt jar there before building (see README-BUILD-RU.md).")
+		}
+	}
 }

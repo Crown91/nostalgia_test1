@@ -9,14 +9,5 @@ pluginManagement {
 	}
 }
 
-includeBuild('../Zemlya') {
-	dependencySubstitution {
-		substitute module('net.zemlya:zemlya') using project(':')
-	}
-}
-
-includeBuild('../SHA') {
-	dependencySubstitution {
-		substitute module('net.sha:sha') using project(':')
-	}
-}
+// Composite builds of ../Zemlya and ../SHA were removed: this repository builds
+// standalone against the prebuilt jars in libs/.
