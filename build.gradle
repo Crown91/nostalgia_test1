@@ -1,3 +1,9 @@
+import groovy.json.JsonSlurper
+
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.zip.ZipFile
+
 plugins {
 	id 'fabric-loom' version "${loom_version}"
 	id 'maven-publish'
@@ -10,36 +16,91 @@ base {
 	archivesName = project.archives_base_name
 }
 
-repositories {
-	mavenLocal()
-	mavenCentral()
-	maven { url 'https://maven.wispforest.io/releases' }
-	maven { url 'https://jitpack.io/' }
-	maven { url 'https://api.modrinth.com/maven' }
-}
-
 // ---------------------------------------------------------------------------
 // Prebuilt dependencies.
 //
 // The upstream project consumed SHA and Zemlya through composite builds
 // (includeBuild '../SHA' / '../Zemlya') and nested them into the mod jar with
 // Loom's `include` configuration. Composite builds cannot work here because
-// those projects are separate repositories, so the very same jar-in-jar
-// bundling is done from the prebuilt jars in libs/ instead.
+// those projects are separate repositories, so the same jar-in-jar bundling is
+// done from the prebuilt jars in libs/.
 //
-// sodium and punchy stay compile-only: they are normal external mods that the
+// IMPORTANT: Loom 1.15 refuses to nest plain file dependencies -
+//   "Attempted to nest artifact sha.jar which is not a module component and has
+//    no capabilities" (NestableJarGenerationTask)
+// - so every jar that has to be bundled is first staged into
+// build/nestedRepo under its real <modid>-<version>.jar name and then consumed
+// through the flatDir repository below as a normal module dependency.
+//
+// sodium and punchy stay compile-only: they are ordinary external mods that the
 // player installs, they must NOT be bundled.
 // ---------------------------------------------------------------------------
 def shaJar = file("libs/sha.jar")
 def zemlyaJar = file("libs/zemlya.jar")
 
-// libs/zemlya-1.0.0.jar is an OLD build: its com.example.api.GravityChanger has
-// no isInfected(), infect(), getInfectedGravity() or setGravityAnomalyStrength(),
-// and com.example.api.GravityAnomalyZone does not exist there at all. It is
+// libs/zemlya-1.0.0.jar is an OLD build (made from Zemlya's src_legacy): its
+// com.example.api.GravityChanger has no isInfected(), infect(),
+// getInfectedGravity() or setGravityAnomalyStrength(), and
+// com.example.api.GravityAnomalyZone does not exist there at all. It is
 // therefore never used. Put an up-to-date build at libs/zemlya.jar to have it
-// bundled; otherwise the API is compiled from zemlya-api/java and must be
-// provided by a separately installed Zemlya mod at runtime.
+// bundled; otherwise the API is compiled from zemlya-api/java and the Zemlya
+// mod has to be installed separately.
 def bundleZemlya = zemlyaJar.exists()
+
+def nestedRepoDir = layout.buildDirectory.dir("nestedRepo").get().asFile
+
+// Reads id/version from a mod jar's own fabric.mod.json.
+def readModMeta = { File jar ->
+	try {
+		new ZipFile(jar).withCloseable { zip ->
+			def entry = zip.getEntry("fabric.mod.json")
+			if (entry == null) {
+				return null
+			}
+			def json = new JsonSlurper().parse(zip.getInputStream(entry))
+			if (!json.id || !json.version) {
+				return null
+			}
+			return [id: json.id as String, version: json.version as String]
+		}
+	} catch (Exception e) {
+		logger.error("Could not read fabric.mod.json from ${jar}: ${e.message}")
+		return null
+	}
+}
+
+// Copies a jar into build/nestedRepo as <id>-<version>.jar and returns the
+// dependency notation for it (flatDir ignores the group).
+def stageForNesting = { File jar ->
+	if (!jar.exists()) {
+		return null
+	}
+	def meta = readModMeta(jar)
+	if (meta == null) {
+		logger.error("ERROR: ${jar} has no usable fabric.mod.json, it cannot be bundled into the mod jar.")
+		return null
+	}
+	nestedRepoDir.mkdirs()
+	def staged = new File(nestedRepoDir, "${meta.id}-${meta.version}.jar")
+	if (!staged.exists() || staged.length() != jar.length() || staged.lastModified() < jar.lastModified()) {
+		Files.copy(jar.toPath(), staged.toPath(), StandardCopyOption.REPLACE_EXISTING)
+	}
+	logger.lifecycle("jar-in-jar: ${jar.name} -> ${meta.id}:${meta.version}")
+	return "nested:${meta.id}:${meta.version}"
+}
+
+def nestedDependencies = [stageForNesting(shaJar), bundleZemlya ? stageForNesting(zemlyaJar) : null]
+		.findAll { it != null }
+
+repositories {
+	mavenLocal()
+	mavenCentral()
+	maven { url = 'https://maven.wispforest.io/releases' }
+	maven { url = 'https://jitpack.io/' }
+	maven { url = 'https://api.modrinth.com/maven' }
+	// Gives the staged jars proper module coordinates so Loom can nest them.
+	flatDir { dirs = [nestedRepoDir] }
+}
 
 loom {
 	accessWidenerPath = file("src/main/resources/nostalgia.accesswidener")
@@ -98,14 +159,14 @@ dependencies {
 	// file dependencies need no remapping.
 	compileOnly files(shaJar)
 	compileOnly files("libs/sodium.jar", "libs/punchy.jar")
+	if (bundleZemlya) {
+		compileOnly files(zemlyaJar)
+	}
 
 	// jar-in-jar: bundled into build/libs/alpha_protocol-*.jar under META-INF/jars,
 	// so a single file in the mods folder is enough, like in the original build.
-	include files(shaJar)
-
-	if (bundleZemlya) {
-		compileOnly files(zemlyaJar)
-		include files(zemlyaJar)
+	nestedDependencies.each { notation ->
+		include notation
 	}
 }
 
@@ -197,9 +258,7 @@ gradle.projectsEvaluated {
 			logger.error("ERROR: ${p} is missing. Put the prebuilt jar there before building (see README-BUILD-RU.md).")
 		}
 	}
-	if (bundleZemlya) {
-		logger.lifecycle("Zemlya: bundling libs/zemlya.jar into the mod jar (jar-in-jar)")
-	} else {
+	if (!bundleZemlya) {
 		logger.warn("Zemlya: libs/zemlya.jar not found - compiling the API from zemlya-api/java. " +
 			"The Zemlya mod will have to be installed separately, or drop an up-to-date build at libs/zemlya.jar to bundle it.")
 	}
