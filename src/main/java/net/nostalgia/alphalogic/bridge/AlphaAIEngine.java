@@ -1,6 +1,7 @@
 package net.nostalgia.alphalogic.bridge;
 
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.monster.Creeper;
@@ -92,8 +93,35 @@ public class AlphaAIEngine {
     }
   }
 
+  /**
+   * Alpha skeletons always shoot, so make sure they actually hold a bow.
+   *
+   * Since 1.21.5 AbstractArrow validates the "fired from weapon" stack in its constructor and
+   * throws IllegalArgumentException("Invalid weapon firing an arrow") for an empty/non-weapon
+   * stack, which killed the server tick as soon as a bowless skeleton opened fire.
+   */
+  private static ItemStack getBowWeapon(Mob mob) {
+    ItemStack held = mob.getMainHandItem();
+
+    if (held.is(Items.BOW) || held.is(Items.CROSSBOW)) {
+      return held;
+    }
+
+    ItemStack bow = new ItemStack(Items.BOW);
+
+    if (held.isEmpty()) {
+      // also fixes the visual side of the bug: the skeleton was rendered with empty hands
+      mob.setItemSlot(EquipmentSlot.MAINHAND, bow);
+      return mob.getMainHandItem();
+    }
+
+    return bow;
+  }
+
   private static void shootAlphaArrow(Mob mob, Player target, ServerLevel serverLevel) {
-    Arrow arrow = new Arrow(serverLevel, mob, new ItemStack(Items.ARROW), ItemStack.EMPTY);
+    ItemStack weapon = getBowWeapon(mob);
+
+    Arrow arrow = new Arrow(serverLevel, mob, new ItemStack(Items.ARROW), weapon);
     arrow.setSoundEvent(AlphaSounds.RANDOM_DRR.value());
     arrow.setPos(mob.getX(), mob.getY() + 1.4, mob.getZ());
     double dx = target.getX() - mob.getX();
@@ -102,7 +130,7 @@ public class AlphaAIEngine {
     double distanceToTarget = Math.sqrt(dx * dx + dz * dz);
 
     Projectile.spawnProjectileUsingShoot(
-      arrow, serverLevel, new ItemStack(Items.ARROW), dx, dy + distanceToTarget * 0.2, dz, 1.6F, 3.0F
+      arrow, serverLevel, weapon, dx, dy + distanceToTarget * 0.2, dz, 1.6F, 3.0F
     );
     mob.playSound(AlphaSounds.RANDOM_BOW.value(), 1.0F, 1.0F / (mob.getRandom().nextFloat() * 0.4F + 0.8F));
   }
